@@ -7,6 +7,7 @@ SegmentMetrics.  The translation re-ranking function is a **student assignment**
 
 import dataclasses
 import logging
+import argostranslate.translate
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +158,159 @@ def get_shorter_translations(
     Returns:
         Empty list (stub).  Implement to return ``TranslationCandidate`` items.
     """
-    logger.info(
-        "get_shorter_translations called for %.1fs budget (%d chars baseline) — "
-        "returning empty list (student assignment stub).",
-        target_duration_s,
-        len(baseline_es),
+
+    """
+    Strategy:
+    1. Compress the English source text first.
+    2. Translate each shorter English candidate into Spanish.
+    3. Prefer candidates that fit the character budget.
+    4. Use word-boundary truncation only as a fallback.
+    """
+    max_chars = int(target_duration_s * 15)
+    candidates: list[TranslationCandidate] = []
+
+    candidates.append(
+        TranslationCandidate(
+            text=baseline_es,
+            char_count=len(baseline_es),
+            brevity_rationale="Baseline translation"
+        )
     )
-    return []
+
+    if len(baseline_es) <= max_chars:
+        return candidates
+
+    def clean_text(text: str) -> str:
+        return " ".join(text.strip().split())
+
+    def add_unique(items: list[str], text: str):
+        text = clean_text(text)
+        if text and text not in items:
+            items.append(text)
+
+    def truncate_by_words(text: str, limit: int) -> str:
+        words = clean_text(text).split()
+        kept = []
+
+        for word in words:
+            candidate = " ".join(kept + [word])
+            if len(candidate) > limit:
+                break
+            kept.append(word)
+
+        return " ".join(kept)
+
+    def add_candidate(
+        candidates: list[TranslationCandidate],
+        text: str,
+        rationale: str,
+    ):
+        text = clean_text(text)
+
+        if not text:
+            return
+
+        if len(text) >= len(baseline_es):
+            return
+
+        if any(c.text == text for c in candidates):
+            return
+
+        candidates.append(
+            TranslationCandidate(
+                text=text,
+                char_count=len(text),
+                brevity_rationale=rationale,
+            )
+        )
+
+    source = clean_text(source_text)
+    baseline_es = clean_text(baseline_es)
+
+    source_candidates: list[str] = []
+
+    add_unique(source_candidates, source)
+
+    for sep in [".", ",", ";", ":"]:
+        if sep in source:
+            add_unique(source_candidates, source.split(sep)[0])
+
+    shortened = source
+    replacements = {
+        "let me explain": "",
+        "in order to": "to",
+        "due to the fact that": "because",
+        "at this point in time": "now",
+        "over the past few days": "recently",
+        "as you can see": "",
+        "actually": "",
+        "basically": "",
+        "really": "",
+        "very": "",
+        "just": "",
+        "kind of": "",
+        "sort of": "",
+        "you know": "",
+        "I mean": "",
+    }
+
+    for old, new in replacements.items():
+        shortened = shortened.replace(old, new)
+
+    add_unique(source_candidates, shortened)
+
+    approx_source_limit = max(20, int(max_chars * 0.75))
+    add_unique(source_candidates, truncate_by_words(source, approx_source_limit))
+
+    for short_en in source_candidates:
+        try:
+            translated_es = argostranslate.translate.translate(
+                short_en,
+                "en",
+                "es",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Translation failed for source candidate %r: %s",
+                short_en,
+                exc,
+            )
+            continue
+
+        add_candidate(
+            candidates,
+            translated_es,
+            f"Compressed source English before translation: {short_en}",
+        )
+
+    if candidates and all(c.char_count > max_chars for c in candidates):
+        fallback = truncate_by_words(baseline_es, max_chars)
+        add_candidate(
+            candidates,
+            fallback,
+            "Fallback word-boundary truncation to fit duration budget.",
+        )
+
+    if not candidates:
+        fallback = truncate_by_words(baseline_es, max_chars)
+        add_candidate(
+            candidates,
+            fallback,
+            "Fallback word-boundary truncation to fit duration budget.",
+        )
+
+    candidates.sort(
+        key=lambda c: (
+            c.char_count > max_chars,
+            abs(c.char_count - max_chars)
+        )
+    )
+
+    logger.info(
+        "Generated %d shorter translation candidates for %.1fs budget (%d chars).",
+        len(candidates),
+        target_duration_s,
+        max_chars,
+    )
+
+    return candidates
