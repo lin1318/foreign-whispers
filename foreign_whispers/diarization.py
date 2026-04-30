@@ -26,6 +26,22 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
 
     try:
         from pyannote.audio import Pipeline
+        import torch
+        from pyannote.audio.core.task import Specifications, Problem, Resolution
+        from pyannote.audio.core.model import Model
+
+        try:
+            torch.serialization.add_safe_globals([
+                torch.torch_version.TorchVersion,
+                Specifications,
+                Problem,
+                Resolution,
+                Model,
+            ])
+        except Exception:
+            pass
+
+
     except (ImportError, TypeError):
         logger.warning("pyannote.audio not installed — returning empty diarization.")
         return []

@@ -2,7 +2,6 @@
 
 from pydantic import BaseModel
 
-
 class DiarizeSpeakerSegment(BaseModel):
     start_s: float
     end_s: float
