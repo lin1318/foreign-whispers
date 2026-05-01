@@ -56,9 +56,15 @@ async def tts_endpoint(
         }
 
     source_path = str(trans_dir / f"{title}.json")
-
+    speaker_voice_map = {
+        "default": "default.wav",
+        "SPEAKER_00": "default.wav",
+        "SPEAKER_01": "default.wav",
+        "SPEAKER_02": "default.wav",
+    }
+    
     await _run_in_threadpool(
-        None, svc.text_file_to_speech, source_path, str(audio_dir), alignment=alignment
+        None, svc.text_file_to_speech, source_path, str(audio_dir), alignment=alignment,speaker_voice_map=speaker_voice_map
     )
 
     return {
