@@ -281,8 +281,8 @@ def _synced_segment_audio(tts_engine, text: str, target_sec: float, work_dir, st
     return _postprocess_segment(raw_bytes, target_sec, stretch_factor, alignment_enabled, str(work_dir))
 
 
-def text_to_speech(text, output_file_path):
-    _get_tts_engine().tts_to_file(text=text, file_path=str(output_file_path))
+def text_to_speech(text, output_file_path,speaker_wav: str | None = None):
+    _get_tts_engine().tts_to_file(text=text, file_path=str(output_file_path),speaker_wav=speaker_wav)
 
 
 def _load_en_transcript(es_source_path: str) -> dict:
@@ -399,7 +399,7 @@ def _compute_speech_offset(source_path: str) -> float:
     return yt_start - whisper_start
 
 
-def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, speaker_voice_map=None):
+def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, speaker_voice_map=None,speaker_wav=None):
     """Read translated JSON with segment timestamps and produce a time-aligned WAV.
 
     Each segment is individually synthesized and time-stretched to match its
@@ -424,7 +424,7 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
     if not segments:
         text = text_from_file(source_path)
         save_path = pathlib.Path(output_path) / pathlib.Path(save_name)
-        text_to_speech(text, str(save_path))
+        text_to_speech(text, str(save_path), speaker_wav=speaker_wav)
         print("success!")
         return None
 
@@ -488,7 +488,7 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
             elif speaker_voice_map and "default" in speaker_voice_map:
                 reference_wav = speaker_voice_map["default"]
             else:
-                reference_wav = None
+                reference_wav = speaker_wav
             return idx, _synthesize_raw(engine, text, wav_path, reference_wav)
 
         with ThreadPoolExecutor(max_workers=_TTS_WORKERS) as pool:
