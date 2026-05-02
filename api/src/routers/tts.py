@@ -58,11 +58,18 @@ async def tts_endpoint(
         }
 
     source_path = str(trans_dir / f"{title}.json")
+    trans_path = settings.translations_dir / f"{title}.json"
+    translated = json.loads(trans_path.read_text())
+    segments = translated.get("segments", [])
+
+    unique_speakers = sorted(
+        set(seg.get("speaker", "SPEAKER_00") for seg in segments)
+    )
+
+
     speaker_voice_map = {
-        "default": "default.wav",
-        "SPEAKER_00": "default.wav",
-        "SPEAKER_01": "default.wav",
-        "SPEAKER_02": "default.wav",
+        spk: resolve_speaker_wav(settings.speakers_dir, "es", spk)
+        for spk in unique_speakers
     }
 
     if speaker_wav is None:
