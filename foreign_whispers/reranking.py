@@ -215,7 +215,7 @@ def get_shorter_translations(
         text = clean_text(text)
         if not text:
             return
-        if len(text) >= len(clean_text(baseline_es)):
+        if len(text) > len(clean_text(baseline_es)):
             return
         if any(c.text == text for c in items):
             return

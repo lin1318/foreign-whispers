@@ -66,7 +66,6 @@ async def tts_endpoint(
         set(seg.get("speaker", "SPEAKER_00") for seg in segments)
     )
 
-
     speaker_voice_map = {
         spk: resolve_speaker_wav(settings.speakers_dir, "es", spk)
         for spk in unique_speakers
