@@ -166,57 +166,61 @@ def get_shorter_translations(
     3. Prefer candidates that fit the character budget.
     4. Use word-boundary truncation only as a fallback.
     """
-    max_chars = int(target_duration_s * 15)
-    candidates: list[TranslationCandidate] = []
-
-    candidates.append(
-        TranslationCandidate(
-            text=baseline_es,
-            char_count=len(baseline_es),
-            brevity_rationale="Baseline translation"
-        )
-    )
-
-    if len(baseline_es) <= max_chars:
-        return candidates
+    from foreign_whispers.alignment import _estimate_duration
 
     def clean_text(text: str) -> str:
         return " ".join(text.strip().split())
 
-    def add_unique(items: list[str], text: str):
-        text = clean_text(text)
-        if text and text not in items:
-            items.append(text)
-
-    def truncate_by_words(text: str, limit: int) -> str:
+    def truncate_by_words(text: str, limits: int) -> str:
         words = clean_text(text).split()
         kept = []
 
         for word in words:
             candidate = " ".join(kept + [word])
-            if len(candidate) > limit:
+            if len(candidate) > limits:
                 break
             kept.append(word)
 
-        return " ".join(kept)
+        if not kept and words:
+            kept.append(words[0])
 
-    def add_candidate(
-        candidates: list[TranslationCandidate],
-        text: str,
-        rationale: str,
-    ):
+        out = " ".join(kept).strip(" ,;:")
+        if out and out[-1] not in ".!?":
+            out += "."
+        return out
+
+    def remove_fillers(text: str) -> str:
         text = clean_text(text)
+        replacements = {
+            "en este momento": "ahora",
+            "en realidad": "",
+            "básicamente": "",
+            "por supuesto": "",
+            "quiero decir": "",
+            "quiero decir que": "",
+            "es importante señalar que": "",
+            "esto es": "",
+            "verdadero": "",
+            "significativa": "gran",
+            "una cantidad significativa de": "mucho",
+        }
 
+        lowered = text.lower()
+        for old, new in replacements.items():
+            lowered = lowered.replace(old, new)
+
+        return clean_text(lowered)
+
+    def add_candidate(items: list[TranslationCandidate], text: str, rationale: str):
+        text = clean_text(text)
         if not text:
             return
-
-        if len(text) >= len(baseline_es):
+        if len(text) >= len(clean_text(baseline_es)):
+            return
+        if any(c.text == text for c in items):
             return
 
-        if any(c.text == text for c in candidates):
-            return
-
-        candidates.append(
+        items.append(
             TranslationCandidate(
                 text=text,
                 char_count=len(text),
@@ -224,93 +228,52 @@ def get_shorter_translations(
             )
         )
 
-    source = clean_text(source_text)
     baseline_es = clean_text(baseline_es)
+    source_text = clean_text(source_text)
 
-    source_candidates: list[str] = []
+    max_chars = max(8, int(target_duration_s * 15))
+    candidates: list[TranslationCandidate] = []
 
-    add_unique(source_candidates, source)
+    cleaned = remove_fillers(baseline_es)
+    add_candidate(candidates, cleaned, "Removed filler words and shortened phrases.")
 
+    add_candidate(
+        candidates,
+        truncate_by_words(cleaned, max_chars),
+        "Truncated shortened translation to fit the timing budget.",
+    )
+
+    add_candidate(
+        candidates,
+        truncate_by_words(baseline_es, max_chars),
+        "Fallback word-boundary truncation of baseline translation.",
+    )
+
+    # Try translating a shorter source segment.
+    source_short = source_text
     for sep in [".", ",", ";", ":"]:
-        if sep in source:
-            add_unique(source_candidates, source.split(sep)[0])
+        if sep in source_short:
+            source_short = source_short.split(sep)[0]
+            break
 
-    shortened = source
-    replacements = {
-        "let me explain": "",
-        "in order to": "to",
-        "due to the fact that": "because",
-        "at this point in time": "now",
-        "over the past few days": "recently",
-        "as you can see": "",
-        "actually": "",
-        "basically": "",
-        "really": "",
-        "very": "",
-        "just": "",
-        "kind of": "",
-        "sort of": "",
-        "you know": "",
-        "I mean": "",
-    }
+    source_short = truncate_by_words(source_short, max(12, int(max_chars * 0.75)))
 
-    for old, new in replacements.items():
-        shortened = shortened.replace(old, new)
-
-    add_unique(source_candidates, shortened)
-
-    approx_source_limit = max(20, int(max_chars * 0.75))
-    add_unique(source_candidates, truncate_by_words(source, approx_source_limit))
-
-    for short_en in source_candidates:
-        try:
-            translated_es = argostranslate.translate.translate(
-                short_en,
-                "en",
-                "es",
-            )
-        except Exception as exc:
-            logger.warning(
-                "Translation failed for source candidate %r: %s",
-                short_en,
-                exc,
-            )
-            continue
-
+    try:
+        translated_short = argostranslate.translate.translate(source_short, "en", "es")
         add_candidate(
             candidates,
-            translated_es,
-            f"Compressed source English before translation: {short_en}",
+            translated_short,
+            f"Translated shortened source text: {source_short}",
         )
-
-    if candidates and all(c.char_count > max_chars for c in candidates):
-        fallback = truncate_by_words(baseline_es, max_chars)
-        add_candidate(
-            candidates,
-            fallback,
-            "Fallback word-boundary truncation to fit duration budget.",
-        )
-
-    if not candidates:
-        fallback = truncate_by_words(baseline_es, max_chars)
-        add_candidate(
-            candidates,
-            fallback,
-            "Fallback word-boundary truncation to fit duration budget.",
-        )
+    except Exception as exc:
+        logger.warning("Translation failed for shortened source %r: %s", source_short, exc)
 
     candidates.sort(
         key=lambda c: (
-            c.char_count > max_chars,
-            abs(c.char_count - max_chars)
+            _estimate_duration(c.text) > target_duration_s,
+            abs(_estimate_duration(c.text) - target_duration_s),
+            len(c.text),
         )
     )
 
-    logger.info(
-        "Generated %d shorter translation candidates for %.1fs budget (%d chars).",
-        len(candidates),
-        target_duration_s,
-        max_chars,
-    )
-
-    return candidates
+    return candidates[:3]

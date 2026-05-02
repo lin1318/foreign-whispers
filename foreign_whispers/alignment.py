@@ -27,19 +27,43 @@ def _count_syllables(text: str) -> int:
     Returns at least 1 for any non-empty text so the rate never divides by zero.
     """
     # Normalise: decompose accented chars, keep only ASCII letters + spaces
+    text = text.strip()
+    if not text:
+        return 0
+
     nfkd = unicodedata.normalize("NFKD", text.lower())
     ascii_text = "".join(c for c in nfkd if not unicodedata.combining(c))
+
+    # Count vowel groups (aeiou)
     clusters = re.findall(r"[aeiou]+", ascii_text)
+
     return max(1, len(clusters))
 
 
-_SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
+_SYLLABLE_RATE = 4.5        # syllables per second (Romance languages)
+_PAUSE_SECONDS = 0.15       # small pause per punctuation
+_MIN_SHORT_SEC = 0.45       # minimum duration for very short utterances
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a syllable-rate heuristic."""
-    return _count_syllables(text) / _SYLLABLE_RATE
+    """Estimate TTS duration (seconds) using syllables + punctuation pauses."""
+    text = text.strip()
+    if not text:
+        return 0.0
 
+    # 1) speech duration ~ syllables / rate
+    syllables = _count_syllables(text)
+    speech_sec = syllables / _SYLLABLE_RATE
+
+    # 2) pauses for punctuation
+    pause_count = len(re.findall(r"[,.!?;:]", text))
+    pause_sec = pause_count * _PAUSE_SECONDS
+
+    # 3) short utterances need a floor (e.g., "Sí.", "No.")
+    words = re.findall(r"[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+", text)
+    min_sec = _MIN_SHORT_SEC if len(words) <= 2 else 0.0
+
+    return max(speech_sec + pause_sec, min_sec)
 
 @dataclasses.dataclass
 class SegmentMetrics:
@@ -296,5 +320,52 @@ def global_align(
         ))
 
         cumulative_drift += gap_shift
+
+    return aligned
+
+
+def global_align_dp(all_metrics, silence_regions):
+    aligned = []
+    current_time = 0.0
+
+    n = len(all_metrics)
+
+    for i, m in enumerate(all_metrics):
+        source_start = m.source_start
+        source_end = m.source_end
+        source_dur = m.source_duration_s
+
+        predicted = m.predicted_tts_s
+
+        next_stretch = 0.0
+        if i + 1 < n:
+            next_m = all_metrics[i + 1]
+            next_stretch = next_m.predicted_stretch
+
+        stretch = m.predicted_stretch
+
+        if stretch > 1.5:
+            duration = min(predicted, source_dur * 1.2)
+        elif next_stretch > stretch:
+            duration = min(predicted, source_dur)
+        else:
+            duration = min(predicted, source_dur * 1.1)
+
+        start = max(current_time, source_start)
+        end = start + duration
+
+        aligned.append(
+            AlignedSegment(
+                index=m.index,
+                text=m.translated_text,
+                original_start=source_start,
+                original_end=source_end,
+                scheduled_start=start,
+                scheduled_end=end,
+                action=decide_action(m),
+            )
+        )
+
+        current_time = end
 
     return aligned
